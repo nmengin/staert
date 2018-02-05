@@ -7,6 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"bytes"
+	"compress/gzip"
+	"io/ioutil"
+
 	"github.com/abronan/valkeyrie/store"
 	"github.com/containous/flaeg"
 	"github.com/mitchellh/mapstructure"
@@ -1094,11 +1098,13 @@ func TestConvertPairs5Levels(t *testing.T) {
 	}
 }
 
-func TestCollateKvPairsBase64(t *testing.T) {
+func TestCollateKvPairsCompressedData(t *testing.T) {
+
+	strToCompress := "Testing automatic compressed data if byte array"
 	config := &struct {
-		Base64Bytes []byte
+		CompressedDataBytes []byte
 	}{
-		Base64Bytes: []byte("Testing automatic base64 if byte array"),
+		CompressedDataBytes: []byte(strToCompress),
 	}
 
 	//test
@@ -1107,21 +1113,31 @@ func TestCollateKvPairsBase64(t *testing.T) {
 		t.Fatalf("Error: %v", err)
 	}
 
-	expected := map[string]string{
-		"prefix/base64bytes": "VGVzdGluZyBhdXRvbWF0aWMgYmFzZTY0IGlmIGJ5dGUgYXJyYXk=",
+	compressedVal := kv["prefix/compresseddatabytes"]
+	if len(compressedVal) == 0 {
+		t.Fatal("Error : no entry for 'prefix/compresseddatabytes'.")
 	}
-	if !reflect.DeepEqual(kv, expected) {
-		t.Fatalf("Got: %s\nExpected: %s", kv, expected)
+	b := bytes.NewBuffer([]byte(compressedVal))
+	r, err := gzip.NewReader(b)
+	if err != nil {
+		t.Fatalf("Error: %v", err)
+	}
+	defer r.Close()
+	s, err := ioutil.ReadAll(r)
+	data := string(s)
+
+	if strToCompress != data {
+		t.Fatalf("Got: %s\nExpected: %s", kv, strToCompress)
 	}
 }
 
-type TestBase64Struct struct {
-	Base64Bytes []byte
+type TestCompressedDataStruct struct {
+	CompressedDataBytes []byte
 }
 
-func TestParseKvSourceBase64(t *testing.T) {
+func TestParseKvSourceCompressedData(t *testing.T) {
 	//Init
-	config := TestBase64Struct{}
+	config := TestCompressedDataStruct{}
 
 	//Test
 	rootCmd := &flaeg.Command{
@@ -1131,36 +1147,59 @@ func TestParseKvSourceBase64(t *testing.T) {
 		DefaultPointersConfig: &config,
 		Run: func() error { return nil },
 	}
-	kv := &KvSource{
-		&Mock{
-			KVPairs: []*store.KVPair{
-				{
-					Key:   "test/base64bytes",
-					Value: []byte("VGVzdGluZyBhdXRvbWF0aWMgYmFzZTY0IGlmIGJ5dGUgYXJyYXk="),
+
+	strToCompress := "Testing automatic compressed data if byte array"
+	var b bytes.Buffer
+	w := gzip.NewWriter(&b)
+	w.Write([]byte(strToCompress))
+	w.Close()
+
+	kvs := []*KvSource{
+		&KvSource{
+			&Mock{
+				KVPairs: []*store.KVPair{
+					{
+						Key:   "test/compresseddatabytes",
+						Value: b.Bytes(),
+					},
 				},
 			},
+			"test",
 		},
-		"test",
-	}
-	if _, err := kv.Parse(rootCmd); err != nil {
-		t.Fatalf("Error %s", err)
+		&KvSource{
+			&Mock{
+				KVPairs: []*store.KVPair{
+					{
+						Key:   "test/compresseddatabytes",
+						Value: []byte("VGVzdGluZyBhdXRvbWF0aWMgY29tcHJlc3NlZCBkYXRhIGlmIGJ5dGUgYXJyYXk="),
+					},
+				},
+			},
+			"test",
+		},
 	}
 
-	//Check
-	expected := &TestBase64Struct{
-		Base64Bytes: []byte("Testing automatic base64 if byte array"),
-	}
+	for _, kv := range kvs {
+		if _, err := kv.Parse(rootCmd); err != nil {
+			t.Fatalf("Error %s", err)
+		}
 
-	if !reflect.DeepEqual(expected, rootCmd.Config) {
-		actualJSON, err := json.Marshal(rootCmd.Config)
-		if err != nil {
-			t.Fatalf("Error: %v", err)
+		//Check
+		expected := &TestCompressedDataStruct{
+			CompressedDataBytes: []byte(strToCompress),
 		}
-		expectedJSON, err := json.Marshal(expected)
-		if err != nil {
-			t.Fatalf("Error: %v", err)
+
+		if !reflect.DeepEqual(expected, rootCmd.Config) {
+			actualJSON, err := json.Marshal(rootCmd.Config)
+			if err != nil {
+				t.Fatalf("Error: %v", err)
+			}
+			expectedJSON, err := json.Marshal(expected)
+			if err != nil {
+				t.Fatalf("Error: %v", err)
+			}
+			t.Fatalf("\nexpected\t: %s\ngot\t\t\t: %s\n", expectedJSON, actualJSON)
 		}
-		t.Fatalf("\nexpected\t: %s\ngot\t\t\t: %s\n", expectedJSON, actualJSON)
 	}
 }
 
